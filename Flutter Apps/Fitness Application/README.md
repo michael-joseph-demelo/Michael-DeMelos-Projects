@@ -27,5 +27,3 @@ The application included several features designed to support the user's fitness
 - Travel and activity planning
 - Multiple pages connected through a central home screen
 - Notifications and navigation between app features
-- Project Context
-- This application was created as part of my fourth-year Mobile Application Development class. The project focused on applying mobile development concepts while working collaboratively as a group to design, develop, and integrate multiple features into one application.
