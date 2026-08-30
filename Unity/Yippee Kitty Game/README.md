@@ -1,12 +1,8 @@
 Yippee Kitty is a 2D puzzle game inspired by Suika Game, but with cats instead of fruit. This game was created as a fourth-year project for my Game Design with Unity class.
 
-About
+About: The goal of the game is to drop cats into the play area and combine matching cats to create larger ones. The player must manage the available space while trying to get the highest score possible.
 
-The goal of the game is to drop cats into the play area and combine matching cats to create larger ones. The player must manage the available space while trying to get the highest score possible.
-
-My Role
-
-I was responsible for the programming and full game design aswell as making a trailer for the game.
+My Role: I was responsible for the programming and full game design aswell as making a trailer for the game.
 
 -Programmed the game in Unity using C#
 -Designed the gameplay and mechanics
