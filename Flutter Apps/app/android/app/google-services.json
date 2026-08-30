@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "651443258284",
+    "project_id": "biologapp-f7116",
+    "storage_bucket": "biologapp-f7116.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:651443258284:android:5d880c3c80077ccfc8b009",
+        "android_client_info": {
+          "package_name": "com.example.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBofKl_v2GmwJA0NA4b91wk7vL7KdpRjDM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
