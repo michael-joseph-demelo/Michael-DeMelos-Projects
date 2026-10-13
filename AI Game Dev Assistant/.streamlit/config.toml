@@ -1,0 +1,13 @@
+# Settings for the Streamlit web page (app.py).
+
+[server]
+# Only allow connections from this computer. Without this, anyone on your
+# Wi-Fi network could open the page and spend your API credit.
+address = "localhost"
+port = 8501
+# Don't ask for an email address on first run.
+headless = true
+
+[browser]
+# Don't send anonymous usage statistics to Streamlit.
+gatherUsageStats = false
