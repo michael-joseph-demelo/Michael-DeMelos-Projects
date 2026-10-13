@@ -1,10 +1,5 @@
 """
-transcript.py - Saves each conversation to a Markdown (.md) file.
-
-Every chat gets its own file in the "chats" folder, named by date and time,
-e.g. chats/2026-10-08_23-15-02.md. Markdown is plain text with simple
-formatting (# for headings), so you can open it in any text editor, and
-it displays nicely in VS Code or on GitHub.
+Persists each conversation as a Markdown file in chats/.
 """
 
 from datetime import datetime
@@ -20,9 +15,7 @@ class Transcript:
         self.path = CHATS_FOLDER / f"{self.started:%Y-%m-%d_%H-%M-%S}.md"
 
     def add(self, question: str, answer: str) -> None:
-        """Append one question and its answer to the file."""
-        # The file is only created when the first answer arrives,
-        # so chats where you never asked anything don't leave empty files.
+        # Created lazily so sessions with no answers don't leave empty files.
         if not self.path.exists():
             CHATS_FOLDER.mkdir(exist_ok=True)
             header = f"# Chat about {self.project_name}\n\n_Started {self.started:%Y-%m-%d %H:%M}_\n\n"

@@ -1,11 +1,3 @@
-# Third-party packages this project needs.
-# Install them with:  pip install -r requirements.txt
-
-# Official Python library for talking to Claude (Anthropic's AI models)
 anthropic>=1.12,<2
-
-# Loads secrets (like your API key) from a .env file into the program
 python-dotenv>=1.2,<2
-
-# Turns a Python script into a web page (used by app.py)
 streamlit>=1.65,<2

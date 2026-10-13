@@ -1,49 +1,37 @@
 """
-scanner.py - Finds and reads the files inside a Godot project.
-
-This is the "eyes" of the assistant. Before an AI can answer questions
-about your game, something has to go find the code and read it. That's
-this module's job. It knows nothing about AI.
+Project discovery and sandboxed file access. Has no dependency on the AI layer.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 
-# Folders we never want to look inside.
-# - ".godot" is Godot 4's auto-generated cache (imported assets, etc.).
-# - ".git" is version-control history, not game code.
+# .godot is Godot 4's generated import cache.
 SKIPPED_FOLDERS = {".godot", ".git", ".import"}
 
-# File types that are plain text, so the AI can read them.
-# .tscn = scenes, .tres = resources, .godot = project settings (Input Map, etc.)
+# Text formats the assistant may read: .tscn scenes, .tres resources, project.godot settings, data and docs.
 TEXT_EXTENSIONS = {".gd", ".tscn", ".tres", ".godot", ".json", ".cfg", ".gdshader", ".md", ".txt", ".csv"}
 
-# Design docs: Markdown or plain text files you write yourself.
 DOC_EXTENSIONS = {".md", ".txt"}
 
-# Never hand the AI more than this many characters from one file.
+# Per-file cap on what read_file returns, to bound context size.
 MAX_FILE_CHARS = 60_000
 
 
 @dataclass
 class TextFile:
-    """One text file we've read: a script, a scene, a design doc..."""
-
-    path: Path           # Full path on disk
-    relative_path: str   # Path inside the project, e.g. "player/player.gd"
+    path: Path
+    relative_path: str  # POSIX-style, relative to the project root, e.g. "player/player.gd"
     line_count: int
-    content: str         # The file's full text
+    content: str
 
 
 @dataclass
 class Project:
-    """Everything the assistant knows about your Godot project."""
-
     root: Path
-    scripts: list[TextFile]      # Every .gd file, read in full
-    other_files: list[str]       # Paths of other text files (scenes, settings, data) - read on demand
-    docs_dir: Path               # Where your design docs live
-    design_docs: list[TextFile]  # Your design docs, read in full
+    scripts: list[TextFile]  # every .gd file, sent to the model in full
+    other_files: list[str]  # relative paths of other text files, read on demand via tools
+    docs_dir: Path
+    design_docs: list[TextFile]
 
     @property
     def name(self) -> str:
@@ -51,12 +39,11 @@ class Project:
 
 
 def is_godot_project(project_dir: Path) -> bool:
-    """Every Godot project has a 'project.godot' file at its root."""
     return (project_dir / "project.godot").is_file()
 
 
 def _is_skipped(relative: Path, include_addons: bool) -> bool:
-    """True if any folder in the path is one we ignore."""
+    """True if any parent folder is excluded. addons/ holds third-party plugins, so it's opt-in."""
     skipped = SKIPPED_FOLDERS if include_addons else SKIPPED_FOLDERS | {"addons"}
     return any(part in skipped for part in relative.parts[:-1])
 
@@ -67,30 +54,23 @@ def read_text_file(path: Path, root: Path) -> TextFile:
 
 
 def find_gd_files(project_dir: Path, include_addons: bool = False) -> list[TextFile]:
-    """
-    Walk through every folder in the project and collect .gd files.
-
-    include_addons: The "addons" folder usually holds third-party plugins,
-    not your own game code, so it's skipped by default.
-    """
-    scripts = []
-    # rglob("*.gd") = "recursively find every file ending in .gd"
-    for path in sorted(project_dir.rglob("*.gd")):
-        if not _is_skipped(path.relative_to(project_dir), include_addons):
-            scripts.append(read_text_file(path, project_dir))
-    return scripts
+    return [
+        read_text_file(path, project_dir)
+        for path in sorted(project_dir.rglob("*.gd"))
+        if not _is_skipped(path.relative_to(project_dir), include_addons)
+    ]
 
 
 def find_other_text_files(project_dir: Path, docs_dir: Path, include_addons: bool = False) -> list[str]:
-    """List the project's other readable files (scenes, resources, settings, data)."""
+    """Index non-script text files (scenes, resources, settings, data), excluding design docs."""
     found = []
     for path in sorted(project_dir.rglob("*")):
         relative = path.relative_to(project_dir)
         if (
             path.is_file()
             and path.suffix.lower() in TEXT_EXTENSIONS
-            and path.suffix.lower() != ".gd"          # scripts are handled separately
-            and not path.is_relative_to(docs_dir)     # so are design docs
+            and path.suffix.lower() != ".gd"
+            and not path.is_relative_to(docs_dir)
             and not _is_skipped(relative, include_addons)
         ):
             found.append(relative.as_posix())
@@ -98,10 +78,9 @@ def find_other_text_files(project_dir: Path, docs_dir: Path, include_addons: boo
 
 
 def find_design_docs(docs_dir: Path, project_dir: Path) -> list[TextFile]:
-    """Read every .md / .txt file in the design docs folder (if it exists)."""
     if not docs_dir.is_dir():
         return []
-    # Show paths like "docs/combat.md" when the docs live inside the project.
+    # Docs inside the project get project-relative paths ("docs/combat.md"); external docs are docs-relative.
     base = project_dir if docs_dir.is_relative_to(project_dir) else docs_dir
     return [
         read_text_file(path, base)
@@ -112,9 +91,8 @@ def find_design_docs(docs_dir: Path, project_dir: Path) -> list[TextFile]:
 
 def load_project(project_dir: Path, include_addons: bool = False, docs_dir: Path | None = None) -> Project:
     """
-    Check the folder is a real Godot project, then read everything we need.
-    docs_dir defaults to a "docs" folder inside the project.
-    Raises ValueError with a friendly message if something is wrong.
+    Scan a Godot project. docs_dir defaults to <project>/docs.
+    Raises ValueError with a user-facing message if the folder isn't a Godot project.
     """
     if not project_dir.is_dir():
         raise ValueError(f"Folder not found: {project_dir}")
@@ -133,11 +111,11 @@ def load_project(project_dir: Path, include_addons: bool = False, docs_dir: Path
 
 def read_project_file(project: Project, relative_path: str) -> str:
     """
-    Safely read one text file from the project, for the AI's read_file tool.
+    Read a file on behalf of the model's read_file tool.
 
-    The path comes from the AI, so we treat it as untrusted: it must stay
-    inside the project folder and be a text file type we allow. This stops
-    the AI from reading anything else on your computer (like your .env file).
+    The path is model-supplied and therefore untrusted: it's resolved (following symlinks
+    and "..") and must stay inside the project root with an allowed text extension.
+    This keeps files like .env and anything outside the project unreachable.
     """
     target = (project.root / relative_path).resolve()
     if not target.is_relative_to(project.root):
@@ -151,5 +129,8 @@ def read_project_file(project: Project, relative_path: str) -> str:
 
     text = target.read_text(encoding="utf-8", errors="replace")
     if len(text) > MAX_FILE_CHARS:
-        text = text[:MAX_FILE_CHARS] + f"\n\n[...cut off: the file is {len(text)} characters, showing the first {MAX_FILE_CHARS}]"
+        text = (
+            text[:MAX_FILE_CHARS]
+            + f"\n\n[...cut off: the file is {len(text)} characters, showing the first {MAX_FILE_CHARS}]"
+        )
     return text

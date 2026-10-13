@@ -1,16 +1,9 @@
 """
-tools.py - Tools the AI can use to look things up in your project by itself.
+Tool definitions exposed to the model, and their execution.
 
-How tool use works:
-  1. We send the AI a description of each tool (TOOLS below) with every request.
-  2. If the AI decides it needs one, instead of answering it replies with a
-     "tool_use" request, e.g.  read_file(path="project.godot").
-  3. OUR code runs the tool (run_tool below) and sends the result back.
-  4. The AI reads the result and either asks for another tool or answers.
-
-The AI never runs anything itself. It can only ask, and our code decides
-what actually happens. That's why these tools are read-only and limited
-to your project folder.
+Both tools are read-only and scoped to the project folder. Model-supplied arguments
+are validated before use; failures are returned as is_error tool results so the
+model can correct itself instead of the turn crashing.
 """
 
 from anthropic.types.beta import BetaToolUseBlock
@@ -18,11 +11,9 @@ from anthropic.types.beta import BetaToolUseBlock
 from assistant.scanner import Project, read_project_file
 from assistant.search import format_matches, search_project
 
-# The most search results to send back at once (keeps answers fast and cheap).
 MAX_SEARCH_RESULTS = 80
 
-# What the AI sees. The descriptions matter a lot: the AI reads them to
-# decide WHEN to use each tool, so they say when, not just what.
+# Descriptions say *when* to use each tool, since that's what drives the model's choice.
 TOOLS = [
     {
         "name": "search_project",
@@ -40,7 +31,6 @@ TOOLS = [
             },
             "required": ["query"],
         },
-        # Stream the tool request as it's written (our code checks it before running).
         "eager_input_streaming": True,
     },
     {
@@ -57,7 +47,9 @@ TOOLS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path relative to the project folder, e.g. 'fists/FistStats.json' or 'project.godot'",
+                    "description": (
+                        "Path relative to the project folder, e.g. 'fists/FistStats.json' or 'project.godot'"
+                    ),
                 },
             },
             "required": ["path"],
@@ -68,7 +60,7 @@ TOOLS = [
 
 
 def describe_tool_call(block: BetaToolUseBlock) -> str:
-    """A short human-readable line saying what the AI is doing, e.g. 'reading project.godot'."""
+    """Short status line shown to the user while a tool runs, e.g. 'reading project.godot'."""
     args = block.input if isinstance(block.input, dict) else {}
     if block.name == "search_project":
         return f'searching the project for "{args.get("query", "?")}"'
@@ -78,12 +70,11 @@ def describe_tool_call(block: BetaToolUseBlock) -> str:
 
 
 def run_tool(block: BetaToolUseBlock, project: Project) -> dict:
-    """Run the tool the AI asked for, and package the result to send back."""
+    """Execute a tool_use block and return the matching tool_result content block."""
     args = block.input if isinstance(block.input, dict) else {}
     try:
         if block.name == "search_project":
             query = args.get("query")
-            # The AI's input is checked before use, like any input from outside our program.
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("search_project needs a non-empty 'query' string.")
             result = format_matches(search_project(project, query.strip()), limit=MAX_SEARCH_RESULTS)
@@ -95,8 +86,6 @@ def run_tool(block: BetaToolUseBlock, project: Project) -> dict:
         else:
             raise ValueError(f"Unknown tool: {block.name}")
     except ValueError as e:
-        # Tell the AI what went wrong ("is_error") so it can try something else.
         return {"type": "tool_result", "tool_use_id": block.id, "content": str(e), "is_error": True}
 
-    # tool_use_id links this result to the AI's request.
     return {"type": "tool_result", "tool_use_id": block.id, "content": result}

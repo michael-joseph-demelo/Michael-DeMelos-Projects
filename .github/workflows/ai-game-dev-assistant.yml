@@ -1,0 +1,32 @@
+name: AI Game Dev Assistant
+
+on:
+  push:
+    paths:
+      - "AI Game Dev Assistant/**"
+      - ".github/workflows/ai-game-dev-assistant.yml"
+  pull_request:
+    paths:
+      - "AI Game Dev Assistant/**"
+      - ".github/workflows/ai-game-dev-assistant.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: AI Game Dev Assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: AI Game Dev Assistant/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -v

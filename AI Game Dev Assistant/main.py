@@ -1,7 +1,7 @@
 """
-main.py - The terminal version of the assistant. This is the file you run.
+Command-line interface.
 
-Usage (the project folder can be left out if GODOT_PROJECT_DIR is set in .env):
+Usage (project_dir defaults to GODOT_PROJECT_DIR from .env):
     python main.py [project_dir]                                  # list what the assistant can see
     python main.py [project_dir] --search stamina                 # find lines (free, no AI)
     python main.py [project_dir] --ask "Where is stamina modified?"
@@ -27,7 +27,7 @@ EXIT_WORDS = {"exit", "quit", "bye"}
 
 
 def print_stream(assistant: GameAssistant, pieces: Iterator[str]) -> None:
-    """Print each piece of the answer as it arrives, then the cost line."""
+    """Print a streamed answer, then its usage/cost line."""
     for piece in pieces:
         print(piece, end="", flush=True)
     print(f"\n\n--- {assistant.last_usage} ---")
@@ -37,7 +37,7 @@ def print_stream(assistant: GameAssistant, pieces: Iterator[str]) -> None:
 
 
 def print_overview(project: Project) -> None:
-    """Show everything the assistant can see."""
+    """List the scripts, other files and design docs the assistant has access to."""
     print(f"Project: {project.root}\n")
     print("Scripts (sent to the AI in full):")
     for script in project.scripts:
@@ -56,7 +56,7 @@ def print_overview(project: Project) -> None:
 
 
 def run_chat(assistant: GameAssistant) -> None:
-    """Keep asking for questions until the user types 'exit'."""
+    """Interactive REPL with /plan and /search commands."""
     print("Chat mode. Ask anything about your code.")
     print("  /plan <feature>   write an implementation plan (saved to plans/)")
     print("  /search <word>    find lines in your project (free, no AI)")
@@ -64,7 +64,7 @@ def run_chat(assistant: GameAssistant) -> None:
 
     while True:
         try:
-            # "﻿" is an invisible marker PowerShell adds when text is piped in; drop it.
+            # Strip the UTF-8 BOM PowerShell prepends to piped input.
             question = input("You: ").strip().lstrip("﻿")
         except (KeyboardInterrupt, EOFError):
             break
@@ -77,7 +77,8 @@ def run_chat(assistant: GameAssistant) -> None:
         command, _, rest = question.partition(" ")
         command = command.lower()
         if command == "/search":
-            print(format_matches(search_project(assistant.project, rest.strip())) if rest.strip() else "Usage: /search <word>")
+            query = rest.strip()
+            print(format_matches(search_project(assistant.project, query)) if query else "Usage: /search <word>")
             print()
             continue
         if command == "/plan" and not rest.strip():
@@ -91,7 +92,7 @@ def run_chat(assistant: GameAssistant) -> None:
             else:
                 print_stream(assistant, assistant.ask(question))
         except anthropic.APIError as e:
-            # Show the error but keep the chat going, so one failure doesn't end the session.
+            # Report and keep the session alive; the failed turn was never added to history.
             print(f"\n[{describe_api_error(e)}]")
         except KeyboardInterrupt:
             print("\n[Answer stopped. That question wasn't saved, so you can ask it again.]")
@@ -103,17 +104,14 @@ def run_chat(assistant: GameAssistant) -> None:
 
 
 def main() -> None:
-    # Windows terminals don't always handle symbols like arrows; UTF-8 avoids crashes.
+    # Windows consoles default to a legacy code page that can't encode some model output.
     sys.stdout.reconfigure(encoding="utf-8")
-
-    # Read the .env file next to this script and load its values (API key, project folder).
     load_dotenv(Path(__file__).parent / ".env")
 
-    # argparse reads the options you type after "python main.py".
     parser = argparse.ArgumentParser(description="Ask questions about a Godot project's GDScript code.")
     parser.add_argument(
         "project_dir",
-        nargs="?",  # optional: falls back to GODOT_PROJECT_DIR from .env
+        nargs="?",
         default=os.environ.get("GODOT_PROJECT_DIR"),
         help="Path to your Godot project folder (default: GODOT_PROJECT_DIR in .env)",
     )
@@ -148,7 +146,6 @@ def main() -> None:
         print(format_matches(search_project(project, args.search)))
         return
 
-    # Nothing to ask: just show what the assistant can see.
     if not (args.ask or args.plan or args.chat):
         print_overview(project)
         return

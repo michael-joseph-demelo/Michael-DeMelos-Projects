@@ -1,9 +1,8 @@
-# Virtual environment (recreate it with: python -m venv .venv)
 .venv/
-
-# Python's compiled cache files
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 
-# Secrets such as API keys (used in a later stage) - never commit these
+# Secrets
 .env

@@ -1,15 +1,12 @@
 """
-ai.py - Sends your project and questions to Claude, and hands back the answers.
+Claude client: builds each request and runs the agentic tool-use loop.
 
-The key idea: the AI has no access to your computer and no memory between
-requests. It only knows what we put in each request:
-  1. Instructions   - who the AI is and how it should answer (the "system prompt")
-  2. Your project   - every .gd script, your design docs, and a list of other files
-  3. Tools          - descriptions of tools it may ask us to run (see tools.py)
-  4. The conversation so far - every earlier question and answer, plus the new question
-
-Part 4 is how "chat" works: the AI seems to remember earlier questions only
-because we resend the whole conversation every time.
+Every request is assembled from four parts:
+  1. System instructions (role and answering rules)
+  2. The project context: design docs, the other-file index, and every .gd script.
+     This block is prompt-cached, so follow-up questions reuse it at ~5% of the input price.
+  3. Tool definitions (see tools.py)
+  4. The conversation history plus the new user turn
 """
 
 from collections.abc import Iterator
@@ -24,15 +21,13 @@ from assistant.transcript import Transcript
 
 MODEL = "claude-opus-5-5"
 
-# Safety limit: the most rounds of tool use for one question, so a confused
-# AI can't loop forever. After this it must answer with what it has.
+# Upper bound on tool rounds per turn. The final round disables tools so the model must answer.
 MAX_TOOL_ROUNDS = 10
 
-# Prices in US dollars per 1 million tokens, used to estimate what a question costs.
-# A token is roughly 3-4 characters of text (code tends to use more tokens per character).
+# USD per million tokens, for the per-answer cost estimate.
 PRICE_INPUT = 4.00
-PRICE_CACHE_WRITE = 5.00   # first time something is stored in the cache (1.25x input)
-PRICE_CACHE_READ = 0.20    # later requests that reuse the cached part (much cheaper)
+PRICE_CACHE_WRITE = 5.00  # 1.25x input
+PRICE_CACHE_READ = 0.20
 PRICE_OUTPUT = 20.00
 
 SYSTEM_INSTRUCTIONS = """\
@@ -56,7 +51,7 @@ how the game currently works, and help them plan changes.
 
 
 def describe_api_error(error: anthropic.APIError) -> str:
-    """Turn a technical API error into a plain-English message."""
+    """Map an API error to an actionable message for the user."""
     if isinstance(error, anthropic.AuthenticationError):
         return "The API key was rejected. Check the key in your .env file."
     if isinstance(error, anthropic.RateLimitError):
@@ -69,7 +64,7 @@ def describe_api_error(error: anthropic.APIError) -> str:
 
 
 def build_project_text(project: Project) -> str:
-    """Everything about the project the AI gets up front, as one block of labeled text."""
+    """Render the project context as XML-tagged sections for the system prompt."""
     parts = []
 
     if project.design_docs:
@@ -88,71 +83,51 @@ def build_project_text(project: Project) -> str:
 
 
 class GameAssistant:
-    """
-    One conversation with the AI about your project.
-
-    It keeps a list of every message so far. Each new question is sent along
-    with that whole list, which is what lets you ask follow-up questions.
-    """
+    """A multi-turn conversation about one project. Callers consume answers as text streams."""
 
     def __init__(self, project: Project, transcript: Transcript | None = None):
-        # Anthropic() finds your API key automatically in the ANTHROPIC_API_KEY variable.
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
         self.project = project
         self.system = [
             {"type": "text", "text": SYSTEM_INSTRUCTIONS},
             {
                 "type": "text",
                 "text": build_project_text(project),
-                # Cache the project so it doesn't cost full price on every request.
                 "cache_control": {"type": "ephemeral"},
             },
         ]
-        self.transcript = transcript  # Where to save the chat (None = don't save)
-        self.messages = []            # The conversation history: alternating user / assistant
-        self.total_cost = 0.0         # Running cost estimate for this session
-        self.last_usage = ""          # Token/cost summary of the most recent answer
-        self.last_plan_path: Path | None = None  # Where the most recent plan was saved
-
-    # ---------- The two things you can do: ask a question, or plan a feature ----------
+        self.transcript = transcript
+        self.messages = []
+        self.total_cost = 0.0
+        self.last_usage = ""  # token/cost summary of the most recent turn
+        self.last_plan_path: Path | None = None
 
     def ask(self, question: str) -> Iterator[str]:
-        """
-        Send a question and hand back the answer piece by piece as it arrives.
-
-        This is a "generator": instead of returning one finished value, it
-        `yield`s many small ones. The caller decides what to do with each piece,
-        so the terminal can print them and the web page can display them.
-        """
+        """Answer a question, yielding text as it streams in."""
         answer = yield from self._run_turn(question, effort="medium", max_tokens=16000)
         if self.transcript and answer:
             self.transcript.add(question, answer)
 
     def plan(self, feature: str) -> Iterator[str]:
-        """Write an implementation plan for a feature, and save it to the plans folder."""
-        # Planning is harder than answering, so the AI is told to think harder ("high" effort).
+        """Write an implementation plan for a feature and save it to plans/."""
         answer = yield from self._run_turn(build_plan_prompt(feature), effort="high", max_tokens=32000)
         if answer:
             self.last_plan_path = save_plan(feature, answer, self.project.name)
             if self.transcript:
                 self.transcript.add(f"Plan: {feature}", answer)
 
-    # ---------- How a turn works: the tool-use loop ----------
-
     def _run_turn(self, prompt: str, effort: str, max_tokens: int) -> Iterator[str]:
         """
-        Send one user message, then keep going until the AI gives a final answer:
-          ask -> (AI requests a tool -> we run it -> send the result back) x N -> answer
-        Returns the answer text once finished.
+        Run one user turn through the tool loop and return the final answer text:
+            request -> (tool_use -> run tools -> tool_result) x N -> final answer
         """
-        # This turn's new messages. They're only added to the real history at the
-        # end, so a failure partway through leaves the conversation clean.
+        # Buffer the turn and commit it to history only on success, so an error or an
+        # unanswerable tool_use mid-turn never leaves the history in an invalid state.
         turn = [{"role": "user", "content": prompt}]
         answer_parts: list[str] = []
         usages = []
 
         for round_number in range(MAX_TOOL_ROUNDS + 1):
-            # On the last round, tools are switched off so the AI has to answer.
             tools_allowed = round_number < MAX_TOOL_ROUNDS
             response = yield from self._stream_response(turn, effort, max_tokens, tools_allowed, answer_parts)
             usages.append(response.usage)
@@ -166,17 +141,16 @@ class GameAssistant:
                 else:
                     yield "\n\n[The model declined to answer this question.]"
                 if tool_requests:
-                    # A half-finished tool request can't be kept in the history
-                    # (every request needs a result), so drop this turn entirely.
+                    # Every tool_use needs a matching tool_result, so a truncated one can't be kept.
                     yield "\n[This exchange wasn't added to the conversation; try asking again.]"
                     self._record_usage(usages)
                     return ""
                 break
 
             if not tool_requests:
-                break  # No tools requested: this is the final answer.
+                break
 
-            # The AI asked for tools. Run each one and send all results back together.
+            # All results for one response go back together in a single user message.
             results = []
             for block in tool_requests:
                 spacing = "\n\n" if answer_parts else ""
@@ -184,52 +158,46 @@ class GameAssistant:
                 results.append(run_tool(block, self.project))
             turn.append({"role": "user", "content": results})
             if answer_parts:
-                answer_parts.append("\n\n")  # keep text from before and after the tools apart
+                answer_parts.append("\n\n")
 
-        # Finished: save the whole turn (question, tool calls, results, answer) to the history.
-        # We store the AI's full response content, not just its text, because the API
-        # expects its tool requests and hidden reasoning blocks back unchanged.
+        # Store full content blocks, not just text: the API requires tool_use and
+        # thinking blocks to be sent back unchanged on later requests.
         self.messages.extend(turn)
         self._record_usage(usages)
         return "".join(answer_parts)
 
     def _stream_response(self, turn, effort, max_tokens, tools_allowed, answer_parts) -> Iterator[str]:
-        """Make one request, yielding the answer text as it streams in. Returns the full response."""
+        """Make one streaming request, yielding text deltas. Returns the final message."""
         for attempt in range(3):
             parts_before = len(answer_parts)
             try:
                 with self.client.beta.messages.stream(
                     model=MODEL,
-                    max_tokens=max_tokens,  # upper limit on the answer's length
-                    # "effort" controls how hard the model thinks before answering.
-                    # Options: low, medium, high, xhigh, max. Higher = slower and pricier.
+                    max_tokens=max_tokens,
                     output_config={"effort": effort},
-                    # If the model's safety filter wrongly declines a question, retry it on
-                    # another model automatically instead of returning nothing.
+                    # Retry on a fallback model if the primary model refuses.
                     betas=["server-side-fallback-2026-07-01"],
                     fallbacks="default",
                     system=self.system,
                     tools=TOOLS,
-                    # "auto" = the AI decides whether to use a tool. "none" = it can't.
                     tool_choice={"type": "auto" if tools_allowed else "none"},
                     messages=self.messages + turn,
-                    # Also cache the conversation so far, so long chats stay cheap.
-                    cache_control={"type": "ephemeral"},
+                    cache_control={"type": "ephemeral"},  # also cache the growing conversation
                 ) as stream:
                     for text in stream.text_stream:
                         answer_parts.append(text)
                         yield text
                     return stream.get_final_message()
             except ValueError:
-                # Rare: the AI's tool request arrived garbled and couldn't be read.
-                # Throw away this attempt's partial text and ask again.
+                # The SDK raises ValueError when streamed tool input isn't valid JSON.
+                # Discard this attempt's partial text and retry.
                 del answer_parts[parts_before:]
                 if attempt == 2:
                     raise
                 yield "\n\n_(retrying...)_\n\n"
 
     def _record_usage(self, usages) -> None:
-        """Add up the tokens used across every request in this turn, and estimate the cost."""
+        """Sum token usage across the turn's requests and update the cost estimate."""
         input_tokens = sum(u.input_tokens for u in usages)
         cache_write = sum(u.cache_creation_input_tokens or 0 for u in usages)
         cache_read = sum(u.cache_read_input_tokens or 0 for u in usages)

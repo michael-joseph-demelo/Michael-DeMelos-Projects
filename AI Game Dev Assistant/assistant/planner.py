@@ -1,10 +1,5 @@
 """
-planner.py - Turns a feature idea into a step-by-step implementation plan.
-
-A plan request is just a normal question wrapped in detailed instructions
-(PLAN_PROMPT). This is a common trick in AI apps: the same AI gives very
-different answers depending on how precisely you describe what you want.
-Finished plans are saved to the "plans" folder as Markdown files.
+Implementation-plan prompt template and plan persistence (plans/*.md).
 """
 
 import re
@@ -57,12 +52,15 @@ def build_plan_prompt(feature: str) -> str:
     return PLAN_PROMPT.format(feature=feature)
 
 
+def slugify(text: str, max_length: int = 50) -> str:
+    """'Add a heavy punch!' -> 'add-a-heavy-punch'. Falls back to 'plan' if nothing is left."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:max_length].rstrip("-") or "plan"
+
+
 def save_plan(feature: str, plan: str, project_name: str) -> Path:
-    """Save the plan as e.g. plans/2026-10-08_23-40_add-a-heavy-punch.md and return the path."""
-    # Turn the feature description into a short, file-name-safe "slug".
-    slug = re.sub(r"[^a-z0-9]+", "-", feature.lower()).strip("-")[:50].rstrip("-") or "plan"
+    """Write the plan to plans/<timestamp>_<slug>.md and return the path."""
     now = datetime.now()
-    path = PLANS_FOLDER / f"{now:%Y-%m-%d_%H-%M}_{slug}.md"
+    path = PLANS_FOLDER / f"{now:%Y-%m-%d_%H-%M}_{slugify(feature)}.md"
 
     PLANS_FOLDER.mkdir(exist_ok=True)
     header = f"# Plan: {feature}\n\n_{project_name}, {now:%Y-%m-%d %H:%M}_\n\n"

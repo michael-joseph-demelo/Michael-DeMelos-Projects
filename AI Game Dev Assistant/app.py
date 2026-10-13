@@ -1,14 +1,8 @@
 """
-app.py - The web page version of the assistant.
+Streamlit web UI. Run with `streamlit run app.py` and open http://localhost:8501.
 
-Run it with:
-    .venv\\Scripts\\python.exe -m streamlit run app.py
-then open http://localhost:8501 in your browser.
-
-How Streamlit works: every time you click or type something, Streamlit runs
-this whole file again from top to bottom and redraws the page. Anything that
-must survive between those re-runs (like the conversation) is stored in
-st.session_state, a dictionary Streamlit keeps for each open browser tab.
+Streamlit re-executes this script on every interaction, so the GameAssistant and the
+rendered chat history live in st.session_state (per browser tab).
 """
 
 import os
@@ -30,24 +24,24 @@ ASK, PLAN = "Ask a question", "Plan a feature"
 
 
 def start_new_chat(project_dir: Path) -> None:
-    """Scan the project and start a fresh conversation (and a new transcript file)."""
+    """Rescan the project and start a fresh conversation and transcript."""
     docs_env = os.environ.get("DESIGN_DOCS_DIR")
     docs_dir = Path(docs_env).expanduser().resolve() if docs_env else None
     project = load_project(project_dir, docs_dir=docs_dir)
     st.session_state.assistant = GameAssistant(project, transcript=Transcript(project.name))
-    # What to show on screen: a list of {"role", "text", "note"} entries.
-    st.session_state.chat = []
+    st.session_state.chat = []  # rendered messages: {"role", "text", "note"}
 
 
 # ---------- Sidebar: choose the project and mode ----------
 with st.sidebar:
     st.header("Project")
     path_text = st.text_input("Godot project folder", value=os.environ.get("GODOT_PROJECT_DIR", ""))
-    load_clicked = st.button("Load project / New chat", width="stretch",
-                             help="Re-reads your files, so use this after editing code or docs.")
+    load_clicked = st.button(
+        "Load project / New chat", width="stretch", help="Re-reads your files, so use this after editing code or docs."
+    )
     mode = st.radio("Mode", [ASK, PLAN], horizontal=True)
 
-# Load the project when the button is clicked, or automatically on the first visit.
+# Load on button click, or automatically on first visit if a path is configured.
 if load_clicked or ("assistant" not in st.session_state and path_text):
     try:
         start_new_chat(Path(path_text).expanduser().resolve())
@@ -61,13 +55,12 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
     st.stop()
 if "assistant" not in st.session_state:
     st.info("Enter your Godot project folder in the sidebar and click **Load project**.")
-    st.stop()  # Nothing more to draw until a project is loaded.
+    st.stop()
 
 assistant: GameAssistant = st.session_state.assistant
 project = assistant.project
 
 # ---------- Main area: the conversation ----------
-# Redraw every earlier message (remember, the whole page is rebuilt on each run).
 for message in st.session_state.chat:
     with st.chat_message(message["role"]):
         st.markdown(message["text"])
@@ -76,7 +69,8 @@ for message in st.session_state.chat:
 
 placeholder = (
     "Describe a feature to plan, e.g. Add a heavy punch that costs more stamina"
-    if mode == PLAN else "Ask about your code, e.g. Where is stamina modified?"
+    if mode == PLAN
+    else "Ask about your code, e.g. Where is stamina modified?"
 )
 if prompt := st.chat_input(placeholder):
     shown_prompt = f"**📋 Plan:** {prompt}" if mode == PLAN else prompt
@@ -85,7 +79,6 @@ if prompt := st.chat_input(placeholder):
 
     with st.chat_message("assistant"):
         try:
-            # write_stream shows each piece as it arrives and returns the full text at the end.
             pieces = assistant.plan(prompt) if mode == PLAN else assistant.ask(prompt)
             answer = st.write_stream(pieces)
             note = assistant.last_usage
@@ -99,7 +92,7 @@ if prompt := st.chat_input(placeholder):
             st.error(describe_api_error(e))
 
 # ---------- Sidebar: project info, cost, docs and search ----------
-# This is drawn last so the cost includes the answer that just finished.
+# Drawn after the chat so the cost metric includes the answer that just finished.
 with st.sidebar:
     total_lines = sum(s.line_count for s in project.scripts)
     st.caption(f"**{project.name}**: {len(project.scripts)} scripts, {total_lines} lines")
